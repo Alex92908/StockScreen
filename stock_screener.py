@@ -16,35 +16,20 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-
 class NumericTableWidgetItem(QTableWidgetItem):
-    def __init__(self, value, is_percentage=False):
-        if isinstance(value, str):
-            # 移除百分号并转换为浮点数
-            if '%' in value:
-                value = float(value.replace('%', ''))
-            else:
-                try:
-                    value = float(value)
-                except ValueError:
-                    value = 0.0
-
-        # 存储原始值用于显示
-        self.raw_value = value
-        self.is_percentage = is_percentage
-
-        # 格式化显示值
-        if is_percentage:
-            display_value = f"{value:.2f}%"
-        else:
-            display_value = f"{value:.2f}"
-
-        super().__init__(display_value)
-
     def __lt__(self, other):
+        def parse_percentage(s):
+            s = s.strip().replace("%", "")
+            try:
+                return float(s) / 100
+            except ValueError:
+                return float('-inf')
+
         try:
-            return float(self.raw_value) < float(other.raw_value)
-        except (ValueError, TypeError):
+            if "%" in self.text() and "%" in other.text():
+                return parse_percentage(self.text()) < parse_percentage(other.text())
+            return float(self.text()) < float(other.text())
+        except ValueError:
             return super().__lt__(other)
 
 
@@ -788,10 +773,10 @@ class StockScreener(QMainWindow):
             for i, (_, row) in enumerate(df.iterrows()):
                 self.stock_table.setItem(i, 0, QTableWidgetItem(str(row['代码'])))
                 self.stock_table.setItem(i, 1, QTableWidgetItem(str(row['名称'])))
-                self.stock_table.setItem(i, 2, QTableWidgetItem(str(row['最新价'])))
-                self.stock_table.setItem(i, 3, QTableWidgetItem(str(row['涨跌幅'])))
-                self.stock_table.setItem(i, 4, QTableWidgetItem(str(row['换手率'])))
-                self.stock_table.setItem(i, 5, QTableWidgetItem(str(row['量比'])))
+                self.stock_table.setItem(i, 2, NumericTableWidgetItem(str(row['最新价'])))
+                self.stock_table.setItem(i, 3, NumericTableWidgetItem(str(row['涨跌幅'])))
+                self.stock_table.setItem(i, 4, NumericTableWidgetItem(str(row['换手率'])))
+                self.stock_table.setItem(i, 5, NumericTableWidgetItem(str(row['量比'])))
 
             # 筛选并显示增长股票
             growing_stocks = df[df['涨跌幅'] > 0].sort_values(by='涨跌幅', ascending=False)
@@ -1373,8 +1358,7 @@ class StockScreener(QMainWindow):
             for col_idx, column in enumerate(columns):
                 # 根据列类型创建不同的表格项
                 if column in ['现价', '涨跌幅', '量比', '换手率', '评分', '风险分']:
-                    is_percentage = column in ['涨跌幅', '换手率']
-                    item = NumericTableWidgetItem(str(row[column]), is_percentage)
+                    item = NumericTableWidgetItem(str(row[column]))
                 else:
                     item = QTableWidgetItem(str(row[column]))
                 
@@ -1844,7 +1828,7 @@ class StockScreener(QMainWindow):
                 current_row = self.result_table.rowCount()
                 self.result_table.insertRow(current_row)
                 for col_idx, column in enumerate(columns):
-                    item = QTableWidgetItem(str(result[column]))
+                    item = NumericTableWidgetItem(str(result[column]))
                     item.setTextAlignment(Qt.AlignCenter)
                     # 设置涨跌幅颜色
                     if column == '涨跌幅':
@@ -2390,11 +2374,11 @@ class StockScreener(QMainWindow):
             for i, stock in enumerate(all_data):
                 table.setItem(i, 0, QTableWidgetItem(stock['code']))
                 table.setItem(i, 1, QTableWidgetItem(stock['name']))
-                table.setItem(i, 2, QTableWidgetItem(str(stock['change_pct'])))
-                table.setItem(i, 3, QTableWidgetItem(str(stock['flow'])))
-                table.setItem(i, 4, QTableWidgetItem(str(stock['超大单'])))
-                table.setItem(i, 5, QTableWidgetItem(str(stock['大单'])))
-                table.setItem(i, 6, QTableWidgetItem(str(stock['中单'])))
+                table.setItem(i, 2, NumericTableWidgetItem(str(stock['change_pct'])))
+                table.setItem(i, 3, NumericTableWidgetItem(str(stock['flow'])))
+                table.setItem(i, 4, NumericTableWidgetItem(str(stock['超大单'])))
+                table.setItem(i, 5, NumericTableWidgetItem(str(stock['大单'])))
+                table.setItem(i, 6, NumericTableWidgetItem(str(stock['中单'])))
             main_layout.addWidget(table)
             # 添加导出Excel按钮
             export_btn = QPushButton("导出Excel")
@@ -2512,8 +2496,8 @@ class StockScreener(QMainWindow):
                             change = str(row[column_map['change_percent']]).rstrip('%') + '%'
                             flow_table.setItem(i, 0, QTableWidgetItem(code))
                             flow_table.setItem(i, 1, QTableWidgetItem(name))
-                            flow_table.setItem(i, 2, QTableWidgetItem(price))
-                            flow_table.setItem(i, 3, QTableWidgetItem(change))
+                            flow_table.setItem(i, 2, NumericTableWidgetItem(price))
+                            flow_table.setItem(i, 3, NumericTableWidgetItem(change))
                             def convert_flow_value(value):
                                 try:
                                     if isinstance(value, str):
@@ -2547,7 +2531,7 @@ class StockScreener(QMainWindow):
                                 'main_flow': flow_values[0]
                             })
                             for col, value in enumerate(flow_values, start=4):
-                                item = QTableWidgetItem(f"{value:.2f}")
+                                item = NumericTableWidgetItem(f"{value:.2f}")
                                 if value > 0:
                                     item.setForeground(QBrush(QColor('#FF4444')))
                                 else:
@@ -2706,7 +2690,8 @@ class StockScreener(QMainWindow):
                     # 填充数据
                     for i, row in df.iterrows():
                         for j, col in enumerate(columns):
-                            item = QTableWidgetItem(str(row[col]))
+                            #NumericTableWidgetItem QTableWidgetItem
+                            item = NumericTableWidgetItem(str(row[col]))
                             item.setTextAlignment(Qt.AlignCenter)
                             
                             # 设置涨跌幅颜色
