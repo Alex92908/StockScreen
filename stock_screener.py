@@ -411,9 +411,9 @@ class StockScreener(QMainWindow):
         control_layout.addWidget(analyze_market_btn)
 
         # 添加资金流向分析按钮
-        money_flow_btn = QPushButton('资金流向分析')
-        money_flow_btn.clicked.connect(self.show_money_flow_analysis)
-        control_layout.addWidget(money_flow_btn)
+        # money_flow_btn = QPushButton('资金流向分析')
+        # money_flow_btn.clicked.connect(self.show_money_flow_analysis)
+        # control_layout.addWidget(money_flow_btn)
 
         # 添加资金净流入排序按钮
         money_flow_rank_btn = QPushButton('资金净流入排序')
@@ -2407,7 +2407,7 @@ class StockScreener(QMainWindow):
             
             # 创建时间范围选择下拉框
             time_range_combo = QComboBox()
-            time_range_combo.addItems(["东方财富当日", "当日", "5日"])
+            time_range_combo.addItems(["东方财富当日", "5日"])
             
             # 创建刷新按钮和导出按钮
             refresh_btn = QPushButton("刷新")
