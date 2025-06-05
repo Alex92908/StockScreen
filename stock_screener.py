@@ -2427,10 +2427,10 @@ class StockScreener(QMainWindow):
             
             # 创建表格
             flow_table = QTableWidget()
-            flow_table.setColumnCount(11)
+            flow_table.setColumnCount(12)
             flow_table.setHorizontalHeaderLabels([
                 '股票代码', '股票名称', '最新价', '涨跌幅', 
-                '主力净流入(亿)', '超大单净流入(亿)', '大单净流入(亿)', '中单净流入(亿)', '总市值(亿)', '主力净流入占市值(%)', '预期'
+                '主力净流入(亿)', '超大单净流入(亿)', '大单净流入(亿)', '中单净流入(亿)', '总市值(亿)', '流通市值(亿)', '主力净流入占市值(%)', '主力净流入占流通市值(%)', '预期'
             ])
             layout.addWidget(flow_table)
             
@@ -2489,7 +2489,7 @@ class StockScreener(QMainWindow):
                     # 获取全市场总市值数据
                     spot_df = ak.stock_zh_a_spot_em()
                     code2cap = dict(zip(spot_df['代码'], spot_df['总市值']))
-                    code2name = dict(zip(spot_df['代码'], spot_df['名称']))
+                    code2liucap = dict(zip(spot_df['代码'], spot_df['流通市值']))
                     sorted_data = []
                     flow_table.setRowCount(len(flow_data))
                     for i, row in flow_data.iterrows():
@@ -2543,15 +2543,24 @@ class StockScreener(QMainWindow):
                                 flow_table.setItem(i, col, item)
                             # 计算主力净流入占总市值比例
                             cap = code2cap.get(code, 0)
+                            liucap = code2liucap.get(code, 0)
                             try:
                                 cap = float(cap)
                             except:
                                 cap = 0
+                            try:
+                                liucap = float(liucap)
+                            except:
+                                liucap = 0
                             main_flow = flow_values[0] * 1e8  # 单位元
                             # 总市值(亿)
                             cap_yi = cap / 1e8 if cap > 0 else 0
                             cap_item = NumericTableWidgetItem(f"{cap_yi:.2f}")
                             flow_table.setItem(i, 8, cap_item)
+                            # 流通市值(亿)
+                            liucap_yi = liucap / 1e8 if liucap > 0 else 0
+                            liucap_item = NumericTableWidgetItem(f"{liucap_yi:.2f}")
+                            flow_table.setItem(i, 9, liucap_item)
                             # 主力净流入占总市值比例
                             ratio = (main_flow / cap * 100) if cap > 0 else 0
                             ratio_item = NumericTableWidgetItem(f"{ratio:.2f}")
@@ -2559,22 +2568,33 @@ class StockScreener(QMainWindow):
                                 ratio_item.setForeground(QBrush(QColor('#FF4444')))
                             else:
                                 ratio_item.setForeground(QBrush(QColor('#00AA00')))
-                            flow_table.setItem(i, 9, ratio_item)
+                            flow_table.setItem(i, 10, ratio_item)
+                            # 主力净流入占流通市值比例
+                            liuratio = (main_flow / liucap * 100) if liucap > 0 else 0
+                            liuratio_item = NumericTableWidgetItem(f"{liuratio:.2f}")
+                            if liuratio > 0:
+                                liuratio_item.setForeground(QBrush(QColor('#FF4444')))
+                            else:
+                                liuratio_item.setForeground(QBrush(QColor('#00AA00')))
+                            flow_table.setItem(i, 11, liuratio_item)
                             # 预期判断
                             # 规则：
                             # 1. 总市值大于500亿且主力净流入占比<0.1%，预期"主力流入占比低，大盘股难大涨"
                             # 2. 总市值小于50亿且主力净流入占比>0.5%，预期"主力流入占比高，小盘股易拉升"
-                            # 3. 其余"中性"
+                            # 3. 主力净流入占流通市值>1%，预期"主力流入占流通盘高，极易拉升"
+                            # 4. 其余"中性"
                             if cap_yi > 500 and ratio < 0.1:
                                 expect = "主力流入占比低，大盘股难大涨"
                             elif cap_yi < 50 and ratio > 0.5:
                                 expect = "主力流入占比高，小盘股易拉升"
+                            elif liuratio > 1:
+                                expect = "主力流入占流通盘高，极易拉升"
                             elif ratio > 0.3:
                                 expect = "主力流入占比高，短线关注"
                             else:
                                 expect = "中性"
                             expect_item = QTableWidgetItem(expect)
-                            flow_table.setItem(i, 10, expect_item)
+                            flow_table.setItem(i, 12, expect_item)
                             try:
                                 change_item = flow_table.item(i, 3)
                                 change_text = change_item.text().replace('%', '')
