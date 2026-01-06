@@ -16,6 +16,12 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+import threading
+import time
+# 需要添加的导入
+from PyQt5.QtCore import QMetaObject, pyqtSlot, QTime
+from PyQt5.QtWidgets import QTimeEdit, QGroupBox
+
 class NumericTableWidgetItem(QTableWidgetItem):
     def __lt__(self, other):
         def parse_percentage(s):
@@ -366,6 +372,11 @@ class StockScreener(QMainWindow):
         super().__init__()
         self.ma_trend_cache = {}  # 添加缓存字典
         self.market_trend_cache = {}  # 添加大盘趋势缓存
+
+        self.surge_monitor_running = False
+        self.surge_monitor_thread = None
+        self.surge_history = {}  # 存储股票价格历史数据
+        self.surge_alerts = []  # 存储拉升提醒
         self.initUI()
 
     def initUI(self):
@@ -520,6 +531,21 @@ class StockScreener(QMainWindow):
 
         main_widget.setLayout(layout)
 
+        # 在control_layout中添加新的监控按钮
+        surge_monitor_btn = QPushButton('启动拉升监控')
+        surge_monitor_btn.clicked.connect(self.toggle_surge_monitor)
+        control_layout.addWidget(surge_monitor_btn)
+
+        surge_search_btn = QPushButton('查找拉升股票')
+        surge_search_btn.clicked.connect(self.search_surge_stocks)
+        control_layout.addWidget(surge_search_btn)
+
+        # 在筛选条件区域添加拉升监控设置
+        self.setup_surge_monitor_settings(layout)
+
+        # 添加拉升监控结果表格
+        self.create_surge_monitor_table(splitter)
+
         # 初始加载数据
         self.refresh_data()
 
@@ -528,6 +554,317 @@ class StockScreener(QMainWindow):
         self.stock_table.customContextMenuRequested.connect(self.show_context_menu)
         self.result_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.result_table.customContextMenuRequested.connect(self.show_context_menu)
+
+    def setup_surge_monitor_settings(self, layout):
+        """设置拉升监控参数"""
+        surge_group = QGroupBox("拉升监控设置")
+        surge_layout = QGridLayout()
+
+        # 拉升幅度设置
+        surge_layout.addWidget(QLabel('拉升幅度(%):'), 0, 0)
+        self.surge_threshold = QDoubleSpinBox()
+        self.surge_threshold.setRange(1, 50)
+        self.surge_threshold.setValue(5)
+        self.surge_threshold.setSuffix('%')
+        surge_layout.addWidget(self.surge_threshold, 0, 1)
+
+        # 监控时间窗口设置
+        surge_layout.addWidget(QLabel('时间窗口(分钟):'), 0, 2)
+        self.time_window = QSpinBox()
+        self.time_window.setRange(5, 120)
+        self.time_window.setValue(30)
+        surge_layout.addWidget(self.time_window, 0, 3)
+
+        # 监控间隔设置
+        surge_layout.addWidget(QLabel('监控间隔(秒):'), 0, 4)
+        self.monitor_interval = QSpinBox()
+        self.monitor_interval.setRange(10, 300)
+        self.monitor_interval.setValue(30)
+        surge_layout.addWidget(self.monitor_interval, 0, 5)
+
+        # 成交量放大倍数
+        surge_layout.addWidget(QLabel('成交量放大:'), 1, 0)
+        self.volume_multiplier = QDoubleSpinBox()
+        self.volume_multiplier.setRange(1, 10)
+        self.volume_multiplier.setValue(2)
+        self.volume_multiplier.setSuffix('倍')
+        surge_layout.addWidget(self.volume_multiplier, 1, 1)
+
+        # 只监控主板股票
+        self.main_board_only = QCheckBox('仅监控主板股票')
+        self.main_board_only.setChecked(True)
+        surge_layout.addWidget(self.main_board_only, 1, 2)
+
+        # 排除涨停股票
+        self.exclude_limit_up = QCheckBox('排除涨停股票')
+        self.exclude_limit_up.setChecked(True)
+        surge_layout.addWidget(self.exclude_limit_up, 1, 3)
+
+        # 特定时间段监控
+        surge_layout.addWidget(QLabel('监控时间段:'), 2, 0)
+
+        # 开始时间
+        self.start_time = QTimeEdit()
+        self.start_time.setTime(QTime(13, 0))  # 默认下午1点开始
+        surge_layout.addWidget(self.start_time, 2, 1)
+
+        surge_layout.addWidget(QLabel('至'), 2, 2)
+
+        # 结束时间
+        self.end_time = QTimeEdit()
+        self.end_time.setTime(QTime(15, 0))  # 默认下午3点结束
+        surge_layout.addWidget(self.end_time, 2, 3)
+
+        # 启用时间段限制
+        self.enable_time_filter = QCheckBox('启用时间段限制')
+        self.enable_time_filter.setChecked(False)
+        surge_layout.addWidget(self.enable_time_filter, 2, 4)
+
+        surge_group.setLayout(surge_layout)
+        layout.addWidget(surge_group)
+
+    def create_surge_monitor_table(self, splitter):
+        """创建拉升监控结果表格"""
+        self.surge_table = QTableWidget()
+        self.surge_table.setColumnCount(10)
+        self.surge_table.setHorizontalHeaderLabels([
+            '时间', '代码', '名称', '拉升前价格', '拉升后价格',
+            '拉升幅度', '时间窗口', '成交量比', '当前价格', '总涨幅'
+        ])
+        self.surge_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.surge_table.horizontalHeader().setStretchLastSection(True)
+        self.surge_table.verticalHeader().setVisible(False)
+
+        # 添加右键菜单
+        self.surge_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.surge_table.customContextMenuRequested.connect(self.show_context_menu)
+        self.surge_table.cellClicked.connect(self.show_stock_charts)
+
+        splitter.addWidget(self.surge_table)
+
+    def toggle_surge_monitor(self):
+        """切换拉升监控状态"""
+        if not self.surge_monitor_running:
+            self.start_surge_monitor()
+        else:
+            self.stop_surge_monitor()
+
+    def start_surge_monitor(self):
+        """启动拉升监控"""
+        if self.surge_monitor_running:
+            return
+
+        self.surge_monitor_running = True
+        self.surge_history.clear()
+        self.surge_alerts.clear()
+
+        # 更新按钮文本
+        for widget in self.findChildren(QPushButton):
+            if widget.text() == '启动拉升监控':
+                widget.setText('停止拉升监控')
+                break
+
+        # 启动监控线程
+        self.surge_monitor_thread = threading.Thread(target=self.surge_monitor_loop)
+        self.surge_monitor_thread.daemon = True
+        self.surge_monitor_thread.start()
+
+        QMessageBox.information(self, '提示', '拉升监控已启动')
+
+    def stop_surge_monitor(self):
+        """停止拉升监控"""
+        self.surge_monitor_running = False
+
+        # 更新按钮文本
+        for widget in self.findChildren(QPushButton):
+            if widget.text() == '停止拉升监控':
+                widget.setText('启动拉升监控')
+                break
+
+        QMessageBox.information(self, '提示', '拉升监控已停止')
+
+    def surge_monitor_loop(self):
+        """拉升监控主循环"""
+        while self.surge_monitor_running:
+            try:
+                current_time = datetime.now()
+
+                # 检查是否在监控时间段内
+                if self.enable_time_filter.isChecked():
+                    start_time = self.start_time.time().toPython()
+                    end_time = self.end_time.time().toPython()
+                    current_time_only = current_time.time()
+
+                    if not (start_time <= current_time_only <= end_time):
+                        time.sleep(self.monitor_interval.value())
+                        continue
+
+                # 获取实时数据
+                df = ak.stock_zh_a_spot_em()
+
+                # 过滤股票
+                if self.main_board_only.isChecked():
+                    df = df[
+                        (~df['代码'].str.startswith('300')) &  # 排除创业板
+                        (~df['代码'].str.startswith('688')) &  # 排除科创板
+                        (~df['代码'].str.startswith('430')) &  # 排除北交所
+                        (~df['代码'].str.startswith('689')) &
+                        (~df['代码'].str.startswith('830')) &
+                        (~df['代码'].str.startswith('839'))
+                        ]
+
+                # 排除涨停股票
+                if self.exclude_limit_up.isChecked():
+                    df = df[df['涨跌幅'] < 9.8]
+
+                self.analyze_surge_stocks(df, current_time)
+
+            except Exception as e:
+                print(f"拉升监控错误: {e}")
+
+            time.sleep(self.monitor_interval.value())
+
+    def analyze_surge_stocks(self, df, current_time):
+        """分析拉升股票"""
+        time_window_minutes = self.time_window.value()
+        surge_threshold = self.surge_threshold.value()
+        volume_threshold = self.volume_multiplier.value()
+
+        for _, row in df.iterrows():
+            code = row['代码']
+            name = row['名称']
+            current_price = float(row['最新价'])
+            volume_ratio = float(row['量比']) if row['量比'] != '-' else 1.0
+
+            # 初始化股票历史数据
+            if code not in self.surge_history:
+                self.surge_history[code] = {
+                    'prices': [],
+                    'times': [],
+                    'volumes': []
+                }
+
+            # 添加当前数据
+            stock_data = self.surge_history[code]
+            stock_data['prices'].append(current_price)
+            stock_data['times'].append(current_time)
+            stock_data['volumes'].append(volume_ratio)
+
+            # 保持数据在时间窗口内
+            cutoff_time = current_time - timedelta(minutes=time_window_minutes)
+            while stock_data['times'] and stock_data['times'][0] < cutoff_time:
+                stock_data['prices'].pop(0)
+                stock_data['times'].pop(0)
+                stock_data['volumes'].pop(0)
+
+            # 检查是否满足拉升条件
+            if len(stock_data['prices']) >= 2:
+                min_price = min(stock_data['prices'][:-1])  # 排除当前价格
+                max_recent_volume = max(stock_data['volumes'][-3:]) if len(stock_data['volumes']) >= 3 else volume_ratio
+
+                if min_price > 0:
+                    surge_percent = ((current_price - min_price) / min_price) * 100
+
+                    # 检查是否满足拉升条件
+                    if (surge_percent >= surge_threshold and
+                            max_recent_volume >= volume_threshold and
+                            self.is_new_surge_alert(code, current_time)):
+                        self.add_surge_alert(code, name, min_price, current_price,
+                                             surge_percent, time_window_minutes,
+                                             max_recent_volume, current_time, row)
+
+    def is_new_surge_alert(self, code, current_time):
+        """检查是否是新的拉升提醒（避免重复提醒）"""
+        for alert in self.surge_alerts:
+            if (alert['code'] == code and
+                    current_time - alert['time'] < timedelta(minutes=10)):  # 10分钟内不重复提醒
+                return False
+        return True
+
+    def add_surge_alert(self, code, name, start_price, end_price, surge_percent,
+                        time_window, volume_ratio, alert_time, stock_row):
+        """添加拉升提醒"""
+        alert = {
+            'code': code,
+            'name': name,
+            'start_price': start_price,
+            'end_price': end_price,
+            'surge_percent': surge_percent,
+            'time_window': time_window,
+            'volume_ratio': volume_ratio,
+            'time': alert_time,
+            'current_price': float(stock_row['最新价']),
+            'total_change': float(stock_row['涨跌幅'])
+        }
+
+        self.surge_alerts.append(alert)
+
+        # 在主线程中更新UI
+        QMetaObject.invokeMethod(self, "update_surge_table", Qt.QueuedConnection)
+
+        # 发送通知（可选）
+        print(f"[{alert_time.strftime('%H:%M:%S')}] 发现拉升: {name}({code}) "
+              f"在{time_window}分钟内拉升{surge_percent:.2f}% "
+              f"(从{start_price:.2f}到{end_price:.2f})")
+
+    @pyqtSlot()
+    def update_surge_table(self):
+        """更新拉升监控表格"""
+        # 按时间倒序排列，最新的在前面
+        sorted_alerts = sorted(self.surge_alerts, key=lambda x: x['time'], reverse=True)
+
+        self.surge_table.setRowCount(len(sorted_alerts))
+
+        for i, alert in enumerate(sorted_alerts):
+            self.surge_table.setItem(i, 0, QTableWidgetItem(alert['time'].strftime('%H:%M:%S')))
+            self.surge_table.setItem(i, 1, QTableWidgetItem(alert['code']))
+            self.surge_table.setItem(i, 2, QTableWidgetItem(alert['name']))
+            self.surge_table.setItem(i, 3, NumericTableWidgetItem(f"{alert['start_price']:.2f}"))
+            self.surge_table.setItem(i, 4, NumericTableWidgetItem(f"{alert['end_price']:.2f}"))
+            self.surge_table.setItem(i, 5, NumericTableWidgetItem(f"{alert['surge_percent']:.2f}%"))
+            self.surge_table.setItem(i, 6, QTableWidgetItem(f"{alert['time_window']}分钟"))
+            self.surge_table.setItem(i, 7, NumericTableWidgetItem(f"{alert['volume_ratio']:.2f}"))
+            self.surge_table.setItem(i, 8, NumericTableWidgetItem(f"{alert['current_price']:.2f}"))
+            self.surge_table.setItem(i, 9, NumericTableWidgetItem(f"{alert['total_change']:.2f}%"))
+
+    def search_surge_stocks(self):
+        """查找历史拉升股票"""
+        try:
+            # 获取当前数据
+            df = ak.stock_zh_a_spot_em()
+
+            # 设置查找参数
+            time_window_minutes = self.time_window.value()
+            surge_threshold = self.surge_threshold.value()
+
+            # 这里可以实现更复杂的历史数据查找逻辑
+            # 由于akshare的限制，这里简化为查找当前高涨幅股票
+
+            surge_stocks = df[df['涨跌幅'] >= surge_threshold]
+
+            if self.main_board_only.isChecked():
+                surge_stocks = surge_stocks[
+                    (~surge_stocks['代码'].str.startswith('300')) &
+                    (~surge_stocks['代码'].str.startswith('688')) &
+                    (~surge_stocks['代码'].str.startswith('430')) &
+                    (~surge_stocks['代码'].str.startswith('689')) &
+                    (~surge_stocks['代码'].str.startswith('830')) &
+                    (~surge_stocks['代码'].str.startswith('839'))
+                    ]
+
+            if self.exclude_limit_up.isChecked():
+                surge_stocks = surge_stocks[surge_stocks['涨跌幅'] < 9.8]
+
+            # 按涨幅排序
+            surge_stocks = surge_stocks.sort_values('涨跌幅', ascending=False)
+
+            # 显示结果
+            self.show_filtered_results(surge_stocks)
+            QMessageBox.information(self, "查找结果", f"找到 {len(surge_stocks)} 只拉升股票")
+
+        except Exception as e:
+            print(f"查找拉升股票失败: {e}")
+            QMessageBox.warning(self, "错误", "查找过程中发生错误")
 
     def copy_stocks_text(self, text):
         """复制股票列表到剪贴板"""
@@ -1438,8 +1775,8 @@ class StockScreener(QMainWindow):
             industry_flow = ak.stock_sector_fund_flow_rank()
             
             # 获取热点消息
-            # news = ak.stock_news_em()
-
+            news = ak.stock_news_em()
+            
             # 分析结果列表
             analysis_results = []
             
@@ -1535,9 +1872,9 @@ class StockScreener(QMainWindow):
                         pass
                     
                     # 7. 相关消息
-                    # stock_news = news[news['代码'] == stock['代码']] if '代码' in news.columns else pd.DataFrame()
-                    # if not stock_news.empty:
-                    #     features.append(f"相关消息{len(stock_news)}条")
+                    stock_news = news[news['代码'] == stock['代码']] if '代码' in news.columns else pd.DataFrame()
+                    if not stock_news.empty:
+                        features.append(f"相关消息{len(stock_news)}条")
                     
                     # 预测趋势
                     trend_prediction = self.predict_trend(
